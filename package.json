@@ -1,0 +1,38 @@
+{
+  "name": "grad-dock",
+  "productName": "GradDock",
+  "version": "0.1.0",
+  "private": true,
+  "description": "研究生桌面悬浮岛：待办 DDL、日程组会倒计时、实验室任务与生活角标。",
+  "author": "GradDock contributors",
+  "license": "MIT",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -s first \"npm:vite\" \"npm:desktop:dev\"",
+    "vite": "vite",
+    "desktop:dev": "wait-on tcp:127.0.0.1:5273 && cross-env GRADDOCK_DEV=http://127.0.0.1:5273 electron .",
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "icon": "node scripts/make-icon.mjs",
+    "dist": "npm run build && electron-builder --win --config electron-builder.cjs",
+    "dist:full": "cross-env GRADDOCK_BUNDLE_RCLONE=1 npm run build && electron-builder --win --config electron-builder.cjs"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.3.1",
+    "electron-builder": "^26.15.3",
+    "lucide-vue-next": "^0.511.0",
+    "pngjs": "^7.0.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "vite": "^6.0.7",
+    "vue": "^3.5.14",
+    "wait-on": "^8.0.2"
+  }
+}
