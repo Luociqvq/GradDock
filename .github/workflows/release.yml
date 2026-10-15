@@ -1,0 +1,51 @@
+name: 发布新版本
+
+# 打一个和 package.json 版本一致的标签就会自动构建并挂到 Release 上：
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并上传 Release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 校验标签与版本号一致
+        shell: bash
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          tag="${GITHUB_REF_NAME}"
+          if [ "$tag" != "v$pkg" ]; then
+            echo "标签 $tag 与 package.json 的版本 $pkg 不一致，先改版本号再打标签" >&2
+            exit 1
+          fi
+          echo "发布版本 $pkg"
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 打包
+        run: npm run dist
+
+      - name: 上传到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/GradDock-Setup-*.exe \
+            release/GradDock-Portable-*.exe \
+            --title "GradDock $GITHUB_REF_NAME" \
+            --generate-notes

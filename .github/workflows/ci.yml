@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 构建并试打包
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 主进程语法检查
+        run: |
+          node --check electron/main.js
+          node --check electron/preload.js
+        shell: bash
+
+      - name: 构建渲染层
+        run: npm run build
+
+      - name: 打包 Windows 产物
+        run: npx electron-builder --win --config electron-builder.cjs
+
+      - name: 留存产物（7 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: graddock-windows-build
+          path: |
+            release/*.exe
+            release/*.blockmap
+          retention-days: 7

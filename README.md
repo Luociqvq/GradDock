@@ -105,6 +105,14 @@ scripts/make-icon.mjs   生成 build/icon.png
 tools/                  可选：本地 rclone（不入库）
 ```
 
+## 发新版本
+
+1. 改 `package.json` 里的 `version`
+2. `git tag v0.1.1 && git push origin v0.1.1`
+
+GitHub Actions 会在 Windows runner 上装依赖、打包，并把两个 exe 挂到 Release（标签和版本号不一致会直接失败）。
+日常推 `main` 也会跑一遍同样的构建并把产物留存 7 天，方便回归对比。
+
 ## 已知取舍
 
 - **Electron 而不是 Tauri**：不需要 Rust 工具链，前端也没写任何 Electron 专有逻辑，留了以后迁移的余地；
