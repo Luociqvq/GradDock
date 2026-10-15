@@ -18,6 +18,8 @@ if (bundleRclone && !rcloneHere) {
 module.exports = {
   appId: 'app.graddock.desktop',
   productName: 'GradDock',
+  // 在 CI 里 electron-builder 会「隐式发布」，没有 token 就直接失败；发布交给 workflow 里的 gh
+  publish: null,
   directories: { output: 'release', buildResources: 'build' },
   files: ['dist/**/*', 'electron/**/*', 'package.json'],
   // ssh2 的原生加速模块 cpu-features 是可选的，缺了会退回纯 JS。

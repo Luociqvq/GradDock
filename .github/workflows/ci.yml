@@ -30,14 +30,11 @@ jobs:
           node --check electron/main.js
           node --check electron/preload.js
 
-      - name: 构建渲染层
-        run: npm run build
-
-      - name: 打包 Windows 产物
+      - name: 构建并打包
         shell: bash
         run: |
           set -o pipefail
-          npx electron-builder --win --config electron-builder.cjs 2>&1 | tee build.log
+          npm run dist 2>&1 | tee build.log
 
       # Actions 日志要登录才能看，失败时把尾巴开成公开 issue 方便远程排查
       - name: 失败时把日志开成 issue
