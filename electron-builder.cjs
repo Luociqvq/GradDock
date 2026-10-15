@@ -20,6 +20,9 @@ module.exports = {
   productName: 'GradDock',
   directories: { output: 'release', buildResources: 'build' },
   files: ['dist/**/*', 'electron/**/*', 'package.json'],
+  // ssh2 的原生加速模块 cpu-features 是可选的，缺了会退回纯 JS。
+  // CI 的 Windows runner 装了编译工具链，rebuild 会去编译它并失败，所以直接跳过。
+  npmRebuild: false,
   extraResources: bundleRclone && rcloneHere
     ? [{ from: 'tools', to: 'tools', filter: ['**/rclone.exe'] }]
     : [],
