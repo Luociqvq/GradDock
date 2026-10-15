@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   build:
@@ -31,29 +30,9 @@ jobs:
           node --check electron/preload.js
 
       - name: 构建并打包
-        shell: bash
-        run: |
-          set -o pipefail
-          npm run dist 2>&1 | tee build.log
-
-      # Actions 日志要登录才能看，失败时把尾巴开成公开 issue 方便远程排查
-      - name: 失败时把日志开成 issue
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          {
-            echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            echo
-            echo '```'
-            tail -c 40000 build.log 2>/dev/null || echo "(没有 build.log)"
-            echo '```'
-          } > report.md
-          gh issue create --title "CI: Windows 打包失败（自动上报）" --body-file report.md
+        run: npm run dist
 
       - name: 留存产物（7 天）
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: graddock-windows-build
