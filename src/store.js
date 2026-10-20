@@ -1,5 +1,5 @@
 import { reactive, computed, watch } from 'vue'
-import { parseQuickAdd } from './domain/parse.js'
+import { parseQuickAdd, needsAi } from './domain/parse.js'
 import { upcomingSchedules } from './domain/schedule.js'
 import { dueMeta, startOfDay, DAY, dayKey } from './domain/time.js'
 import { parseProbe, summarize } from './domain/lab.js'
@@ -56,7 +56,9 @@ function seed() {
       defaultTab: 'todo'
     },
     // 令牌本身存在主进程的加密文件里，这里只留服务器地址
-    cloud: { url: CLOUD_DEFAULT_URL }
+    cloud: { url: CLOUD_DEFAULT_URL },
+    // API Key 同样不进这里，这里只有可以公开的服务商配置
+    ai: { enabled: false, baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' }
   }
 }
 
@@ -72,7 +74,8 @@ function merge(saved) {
     prefs: stale ? base.prefs : { ...base.prefs, ...(saved.prefs || {}) },
     lab: stale ? base.lab : { ...base.lab, ...(saved.lab || {}) },
     life: { ...base.life, ...(saved.life || {}) },
-    cloud: { ...base.cloud, ...(saved.cloud || {}) }
+    cloud: { ...base.cloud, ...(saved.cloud || {}) },
+    ai: { ...base.ai, ...(saved.ai || {}) }
   }
   // 后加的顶层集合在旧数据里不存在，不回填会让面板拿到 undefined
   for (const key of Object.keys(base)) {
@@ -93,6 +96,7 @@ export const state = reactive({
   lab: { running: false, results: [], at: 0, error: '', secrets: {} },
   backup: { jobs: {}, progress: {} },
   cloud: { signedIn: false, email: '', name: '', url: CLOUD_DEFAULT_URL, syncing: false, error: '', at: 0 },
+  ai: { hasKey: false, busy: false, error: '', tokens: 0 },
   bootError: ''
 })
 
@@ -114,12 +118,22 @@ export async function boot() {
   await syncSecrets()
   // 网络慢也不能挡住界面出来，云端拉取自己完成后再刷新列表
   bootCloud()
+  syncAiStatus()
 }
 
 let saveTimer = null
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(persist, 400)
+}
+
+/** 主进程是直接读盘拿配置的，改完 AI 设置要立刻落盘，否则紧接着试跑会读到旧值。 */
+export async function flushSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  await persist()
 }
 
 async function persist() {
@@ -205,30 +219,32 @@ export const getters = {
 }
 
 export const actions = {
-  async addTodo(raw) {
-    const parsed = parseQuickAdd(raw, state.now)
+  /** 一条已解析好的待办落到服务器上。 */
+  async createTodo(parsed) {
     if (!parsed.title) return null
-    if (state.cloud.signedIn) {
-      const res = cloudOk(await desktop.cloudCreate({
-        title: parsed.title,
-        priority: parsed.priority,
-        dueDate: parsed.dueDate,
-        tags: parsed.tags
-      }))
-      state.data.todos.unshift(res.todo)
-      return res.todo
-    }
-    const todo = {
-      id: nextId('t'),
+    const res = cloudOk(await desktop.cloudCreate({
       title: parsed.title,
-      done: false,
-      tags: parsed.tags,
       priority: parsed.priority,
       dueDate: parsed.dueDate,
-      createdAt: Date.now()
+      tags: parsed.tags
+    }))
+    state.data.todos.unshift(res.todo)
+    return res.todo
+  },
+  /**
+   * 输入一句话 → 若干条待办。开了大模型就用它（能拆句、能懂「下周三下午三点」），
+   * 没开、没配密钥或调用失败都退回本机规则解析，不能让断网时添加不了待办。
+   * 返回创建出来的条目数组。
+   */
+  async addTodo(raw) {
+    const text = String(raw || '').trim()
+    if (!text) return []
+    const created = []
+    for (const parsed of await parseInput(text)) {
+      const todo = state.cloud.signedIn ? await actions.createTodo(parsed) : localCreate(parsed)
+      if (todo) created.push(todo)
     }
-    state.data.todos.unshift(todo)
-    return todo
+    return created
   },
   async toggleTodo(id) {
     const todo = state.data.todos.find((t) => t.id === id)
@@ -549,6 +565,89 @@ export async function cloudDisconnect() {
   state.cloud.name = ''
   state.cloud.at = 0
   state.cloud.error = ''
+}
+
+/* ---------- 快速添加的大模型解析（可选） ---------- */
+
+function localCreate(parsed) {
+  const todo = {
+    id: nextId('t'),
+    title: parsed.title,
+    done: false,
+    tags: parsed.tags || [],
+    priority: parsed.priority || 'medium',
+    dueDate: parsed.dueDate || null,
+    createdAt: Date.now()
+  }
+  state.data.todos.unshift(todo)
+  return todo
+}
+
+/** 四项都齐了才真去联网，否则直接走本机规则，省得每敲一条都报一次「没配好」。 */
+export function aiReady() {
+  const cfg = state.data.ai
+  return !!(cfg.enabled && state.ai.hasKey && String(cfg.baseUrl || '').trim() && String(cfg.model || '').trim())
+}
+
+async function parseInput(text) {
+  const local = parseQuickAdd(text, state.now)
+  // 规则本来就读得懂的（「明天交报告 #杂事」）直接本地建，不联网、不等那两秒
+  if (!desktop || !aiReady() || !needsAi(text, local)) return [local]
+  state.ai.busy = true
+  state.ai.error = ''
+  try {
+    const res = await desktop.aiParse(text, state.now)
+    if (res && res.ok) {
+      state.ai.tokens = res.tokens || 0
+      // 模型认为这句话里没有待办（比如误触回车），就别再拿规则硬凑一条出来
+      if (!res.items || !res.items.length) return []
+      return res.items
+    }
+    state.ai.error = (res && res.error) || '大模型解析失败'
+  } catch (err) {
+    state.ai.error = err && err.message ? err.message : '大模型解析失败'
+  } finally {
+    state.ai.busy = false
+  }
+  return [local]
+}
+
+export async function syncAiStatus() {
+  if (!desktop) return
+  const res = await desktop.aiStatus().catch(() => null)
+  if (res) state.ai.hasKey = !!res.hasKey
+}
+
+export async function saveAiConfig(patch) {
+  Object.assign(state.data.ai, patch || {})
+  await flushSave()
+}
+
+export async function setAiKey(key) {
+  if (!desktop) throw new Error('浏览器预览模式不能保存密钥')
+  const res = await desktop.aiSetKey(String(key || '').trim())
+  if (!res || !res.ok) throw new Error((res && res.error) || '保存失败')
+  state.ai.hasKey = !!res.hasKey
+  if (!state.ai.hasKey) state.ai.error = ''
+}
+
+/** 试跑：走和添加待办完全相同的一条链路，只是不落库。 */
+export async function testAiParse(text) {
+  if (!desktop) throw new Error('浏览器预览模式不能联网')
+  state.ai.busy = true
+  state.ai.error = ''
+  try {
+    await flushSave()
+    const res = await desktop.aiParse(text, Date.now())
+    if (!res || !res.ok) {
+      state.ai.error = (res && res.error) || '调用失败'
+      return null
+    }
+    state.ai.tokens = res.tokens || 0
+    return res.items || []
+  } finally {
+    state.ai.busy = false
+  }
 }
 
 export function runAlerts() {

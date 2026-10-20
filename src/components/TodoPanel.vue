@@ -7,9 +7,14 @@
     </p>
 
     <form class="add-row" @submit.prevent="submit">
-      <input v-model="draft" placeholder="添加任务，支持 明天 #论文 !!" />
-      <button type="submit" :disabled="!draft.trim() || busy"><Plus :size="15" /></button>
+      <input v-model="draft" :placeholder="placeholder" />
+      <button type="submit" :disabled="!draft.trim() || busy || ai.busy">
+        <Sparkles v-if="aiOn" :size="15" />
+        <Plus v-else :size="15" />
+      </button>
     </form>
+    <p v-if="ai.busy" class="ai-tip">正在让大模型拆这句…</p>
+    <p v-else-if="ai.error" class="ai-tip ai-tip--bad">{{ ai.error }}</p>
 
     <div v-if="!pending.length" class="empty">
       <span>🎉</span>
@@ -46,8 +51,8 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { Plus, X, Check, CloudUpload, CalendarClock, ArrowUp, Minus, ArrowDown, RotateCcw, Copy, Trash2 } from 'lucide-vue-next'
-import { state, getters, actions, syncTodos, openMenu, copyText } from '../store.js'
+import { Plus, X, Check, CloudUpload, CalendarClock, ArrowUp, Minus, ArrowDown, RotateCcw, Copy, Trash2, Sparkles } from 'lucide-vue-next'
+import { state, getters, actions, syncTodos, openMenu, copyText, aiReady } from '../store.js'
 import { dueMeta, TONE_CLASS, fmtClock, startOfDay, DAY } from '../domain/time.js'
 
 const draft = ref('')
@@ -55,6 +60,9 @@ const busy = ref(false)
 const pending = computed(() => getters.pending.value)
 const completed = computed(() => state.data.todos.filter((t) => t.done))
 const cloud = computed(() => state.cloud)
+const ai = computed(() => state.ai)
+const aiOn = computed(() => aiReady())
+const placeholder = computed(() => (aiOn.value ? '随便写一句，比如「周四前跑完 rebuttal，报销单也交了」' : '添加任务，支持 明天 #论文 !!'))
 const cloudHost = computed(() => String(cloud.value.url || '').replace(/^https?:\/\//, '').replace(/\/+$/, ''))
 
 const meta = (todo) => dueMeta(todo.dueDate, state.now)
@@ -73,9 +81,11 @@ async function run(task) {
 }
 
 async function submit() {
-  const text = draft.value
+  const text = draft.value.trim()
+  if (!text) return
   await run(async () => {
-    if (await actions.addTodo(text)) draft.value = ''
+    // 大模型认为这句里没有待办时返回空数组，输入保持原样让用户自己改
+    if ((await actions.addTodo(text)).length) draft.value = ''
   })
 }
 
@@ -149,6 +159,17 @@ function tagClass(tag) {
 .cloud button:disabled {
   color: #a5b4fc;
   cursor: default;
+}
+
+.ai-tip {
+  margin: -2px 0 0;
+  padding: 0 4px;
+  font-size: 10.5px;
+  color: #94a3b8;
+}
+
+.ai-tip--bad {
+  color: #be123c;
 }
 
 .add-row {

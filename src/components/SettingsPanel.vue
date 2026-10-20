@@ -59,6 +59,47 @@
       </section>
 
       <section>
+        <h5>快速添加助手</h5>
+        <p class="note">开启后，「待办」输入框里随口写的一句会交给大模型拆成条目 —— 比如「周四前跑完 rebuttal 实验，报销单也要交了」会变成两条，顺带认出「下周三下午三点」这种说法。填的接口是你自己的服务商，输入内容会发过去。</p>
+        <label class="line">
+          <span>用大模型解析</span>
+          <input type="checkbox" v-model="aiForm.enabled" />
+        </label>
+        <label class="field"><span>服务商</span>
+          <select v-model="aiForm.preset" @change="applyPreset">
+            <option v-for="item in PRESETS" :key="item.label" :value="item.label">{{ item.label }}</option>
+          </select>
+        </label>
+        <label class="field"><span>接口</span><input v-model="aiForm.baseUrl" placeholder="https://api.deepseek.com/v1" @change="modelList = []" /></label>
+        <label class="field">
+          <span>模型</span>
+          <select v-if="modelList.length" v-model="aiForm.model">
+            <option v-for="m in modelOptions" :key="m.id" :value="m.id">{{ m.label }}</option>
+          </select>
+          <input v-else v-model="aiForm.model" placeholder="deepseek-chat" />
+          <button class="mini" :disabled="loadingModels" @click="loadModels">{{ loadingModels ? '读取中…' : modelList.length ? '刷新列表' : '拉取列表' }}</button>
+        </label>
+        <p v-if="modelsError" class="err">{{ modelsError }}</p>
+        <label class="field"><span>Key</span><input v-model="aiForm.key" type="password" :placeholder="ai.hasKey ? '已保存，留空则不改动' : '粘贴 API Key'" autocomplete="off" /></label>
+        <p v-if="ai.error" class="err">{{ ai.error }}</p>
+        <div v-if="probeResult" class="probe">
+          <p v-for="item in probeResult" :key="item.title" class="probe-row">
+            <strong>{{ item.title }}</strong>
+            <em>{{ dueLabel(item.dueDate) }}</em>
+            <span>{{ item.priority }} · {{ item.tags.join(' ') || '无标签' }}</span>
+          </p>
+          <p class="probe-at">这次用了 {{ ai.tokens }} token</p>
+        </div>
+        <div class="actions">
+          <button class="ghost" :disabled="aiBusy" @click="saveAi">保存设置</button>
+          <button class="ghost" :disabled="aiBusy || !aiForm.key" @click="saveKey">{{ ai.hasKey ? '更新密钥' : '保存密钥' }}</button>
+          <button class="ghost" :disabled="aiBusy" @click="probe">{{ aiBusy ? '解析中…' : '试跑一句' }}</button>
+          <button v-if="ai.hasKey" class="danger" @click="clearKey">清除密钥</button>
+        </div>
+        <p class="note">现在{{ aiOn ? '已启用大模型：规则读得懂的直接本地建，只有「下周五」「月底前」这类规则看不懂的说法、或一句话里塞了几件事时才联网' : '未启用大模型，添加待办只走本机规则：认 今天/明天/后天、周几、M/D、#标签、结尾的 ! 和 !!' }}。</p>
+      </section>
+
+      <section>
         <h5>数据</h5>
         <p class="note">日程、服务器、生活、备份都存在本机；待办在连了 TodoFlow 时以服务器为准，本机那份是缓存。文件位置：<code class="break">{{ dataFile || '（浏览器预览用 localStorage）' }}</code></p>
         <div class="actions">
@@ -78,10 +119,23 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { SlidersHorizontal, X, Download, Upload } from 'lucide-vue-next'
-import { state, actions, cloudConnect, cloudDisconnect, syncTodos } from '../store.js'
+import { state, actions, cloudConnect, cloudDisconnect, syncTodos, aiReady, saveAiConfig, setAiKey, testAiParse } from '../store.js'
 import { fmtClock } from '../domain/time.js'
+
+/** 各家都兼容 OpenAI 的 /chat/completions，预设只帮忙填地址和常用模型名，改得了。 */
+const PRESETS = [
+  { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { label: 'Kimi · Moonshot', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
+  { label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+  { label: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat' },
+  { label: '本地 Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen3:8b' },
+  { label: '自定义', baseUrl: '', model: '' }
+]
+
+const PROBE_TEXT = '周四前跑完 rebuttal 实验，下周三组会要交 PPT，报销单有空交一下'
 
 const emit = defineEmits(['close'])
 const prefs = computed(() => state.data.prefs)
@@ -115,12 +169,111 @@ function syncNow() {
   syncTodos()
 }
 
+const ai = computed(() => state.ai)
+const aiOn = computed(() => aiReady())
+const aiBusy = computed(() => state.ai.busy)
+const probeResult = ref(null)
+const modelList = ref([])
+const loadingModels = ref(false)
+const modelsError = ref('')
+const aiForm = reactive({
+  enabled: state.data.ai.enabled,
+  preset: presetLabel(state.data.ai.baseUrl),
+  baseUrl: state.data.ai.baseUrl,
+  model: state.data.ai.model,
+  key: ''
+})
+
+function presetLabel(url) {
+  const hit = PRESETS.find((p) => p.baseUrl === url)
+  return hit ? hit.label : '自定义'
+}
+
+// 手改地址后，服务商那一栏不能还停在原来选中的名字上骗人
+watch(() => aiForm.baseUrl, (url) => {
+  aiForm.preset = presetLabel(String(url || '').trim())
+})
+
+function applyPreset() {
+  const hit = PRESETS.find((p) => p.label === aiForm.preset)
+  if (!hit || hit.label === '自定义') return
+  aiForm.baseUrl = hit.baseUrl
+  aiForm.model = hit.model
+  probeResult.value = null
+  modelList.value = []
+}
+
+/** 手填过、但清单里没有的模型要留在选项里，否则下拉一渲染就把当前值改掉了。 */
+const modelOptions = computed(() => {
+  const list = modelList.value.slice()
+  const current = String(aiForm.model || '').trim()
+  if (current && !list.some((m) => m.id === current)) list.unshift({ id: current, label: `${current}（当前填写）` })
+  return list
+})
+
+async function loadModels() {
+  if (loadingModels.value) return
+  loadingModels.value = true
+  modelsError.value = ''
+  try {
+    // 主进程是读盘拿接口地址的，先把界面上改过的地址落盘再拉
+    await saveAi()
+    const res = await window.gradDock.aiModels()
+    if (!res || !res.ok) {
+      modelsError.value = (res && res.error) || '读取模型清单失败'
+      return
+    }
+    modelList.value = res.models || []
+  } catch (err) {
+    modelsError.value = err.message || '读取模型清单失败'
+  } finally {
+    loadingModels.value = false
+  }
+}
+
+function saveAi() {
+  return saveAiConfig({ enabled: aiForm.enabled, baseUrl: aiForm.baseUrl.trim(), model: aiForm.model.trim() })
+}
+
+async function saveKey() {
+  try {
+    await setAiKey(aiForm.key)
+    aiForm.key = ''
+    state.ai.error = ''
+    if (state.ai.hasKey && !modelList.value.length) loadModels()
+  } catch (err) {
+    state.ai.error = err.message
+  }
+}
+
+function clearKey() {
+  probeResult.value = null
+  return setAiKey('')
+}
+
+/** 没勾选启用也能试跑，开关只决定添加待办时走不走大模型。 */
+async function probe() {
+  probeResult.value = null
+  try {
+    await saveAi()
+    probeResult.value = await testAiParse(PROBE_TEXT)
+  } catch (err) {
+    state.ai.error = `试跑失败：${err.message || err}`
+  }
+}
+
+const dueLabel = (ms) => (ms ? new Date(ms).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '无截止')
+
 if (window.gradDock) {
   window.gradDock.appInfo().then((info) => {
     if (info) {
       version.value = info.version
       dataFile.value = info.dataFile
     }
+  }).catch(() => {})
+  // 已经存过密钥就顺手把模型清单拉下来，省得还要手填 id
+  window.gradDock.aiStatus().then((status) => {
+    if (status && status.hasKey && status.config && status.config.baseUrl) loadModels()
   }).catch(() => {})
 }
 
@@ -299,6 +452,28 @@ h5 {
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
 }
 
+.field .mini {
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.field .mini:hover {
+  border-color: #a5b4fc;
+  color: #4f46e5;
+}
+
+.field .mini:disabled {
+  color: #cbd5e1;
+  cursor: default;
+}
+
 .err {
   margin: 6px 0 0;
   font-size: 11px;
@@ -354,6 +529,64 @@ h5 {
   border: 1px solid #fecdd3;
   color: #e11d48;
   background: #fff1f2;
+}
+
+.field select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: #334155;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  outline: none;
+}
+
+.probe {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #475569;
+  border-radius: 10px;
+  background: #EEF2FF;
+}
+
+.probe-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  margin: 0;
+  padding: 3px 0;
+  border-bottom: 1px dashed rgba(99, 102, 241, 0.2);
+}
+
+.probe-row:last-of-type {
+  border-bottom: none;
+}
+
+.probe-row strong {
+  flex: 1;
+  min-width: 120px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.probe-row em {
+  font-style: normal;
+  color: #6366f1;
+}
+
+.probe-row span {
+  color: #94a3b8;
+}
+
+.probe-at {
+  margin: 4px 0 0;
+  color: #94a3b8;
 }
 
 .hidden-file {

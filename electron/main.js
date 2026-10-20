@@ -3,10 +3,12 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { spawn } = require('node:child_process')
 const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, nativeImage, shell, screen, safeStorage, dialog } = require('electron')
+const { aiParse, aiListModels } = require('./ai.js')
 
 const DEV_URL = process.env.GRADDOCK_DEV
 const CLOUD_DEFAULT_URL = ''
 const CLOUD_SECRET_KEY = 'todoflow'
+const AI_SECRET_KEY = 'ai'
 const DATA_FILE = () => path.join(app.getPath('userData'), 'grad-dock.json')
 const SECRET_FILE = () => path.join(app.getPath('userData'), 'grad-dock-secrets.json')
 
@@ -896,6 +898,68 @@ const CLOUD_HANDLERS = {
   }
 }
 
+/* ---------- 快速添加：可选用大模型把随口一句话拆成待办 ---------- */
+
+function aiKey() {
+  const packed = readSecrets()[AI_SECRET_KEY]
+  if (!packed) return ''
+  try {
+    return safeStorage.decryptString(Buffer.from(packed, 'base64'))
+  } catch {
+    return ''
+  }
+}
+
+/** 服务商、模型这些是非敏感配置，跟着 store 走；只有 API Key 进加密的 secrets 文件。 */
+function aiConfig() {
+  const saved = readStore().ai
+  return saved && typeof saved === 'object' ? saved : {}
+}
+
+/** 让模型复用已有标签，不然同一件事会被拆成「论文」和「写论文」两个标签。 */
+function aiTagPool() {
+  const todos = Array.isArray(readStore().todos) ? readStore().todos : []
+  const tags = []
+  for (const todo of todos) {
+    for (const tag of Array.isArray(todo && todo.tags) ? todo.tags : []) {
+      if (tag && !tags.includes(tag)) tags.push(tag)
+      if (tags.length === 20) return tags
+    }
+  }
+  return tags
+}
+
+const AI_HANDLERS = {
+  'ai:status': () => ({ hasKey: !!aiKey(), config: aiConfig() }),
+  'ai:models': async () => {
+    const config = aiConfig()
+    return aiListModels({ baseUrl: config.baseUrl, key: aiKey() })
+  },
+  'ai:set-key': (_e, value) => {
+    const next = String(value ?? '').trim()
+    if (next && !safeStorage.isEncryptionAvailable()) {
+      return { ok: false, error: '本机系统加密不可用，为避免明文保存已拒绝' }
+    }
+    const map = readSecrets()
+    if (next) map[AI_SECRET_KEY] = safeStorage.encryptString(next).toString('base64')
+    else delete map[AI_SECRET_KEY]
+    writeSecrets(map)
+    return { ok: true, hasKey: !!next }
+  },
+  'ai:parse': async (_e, payload) => {
+    // 启用与否由渲染层的开关决定，这里只管「配置齐了就解析」，设置页才能不开开关先试跑
+    const config = aiConfig()
+    return aiParse({
+      baseUrl: config.baseUrl,
+      model: config.model,
+      key: aiKey(),
+      text: payload && payload.text,
+      now: payload && payload.now,
+      tags: aiTagPool()
+    })
+  }
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -929,7 +993,7 @@ if (!gotLock) {
     ipcMain.on('backup:watch', (_e, payload) => setupWatchers(payload.jobs, payload.node))
     ipcMain.on('backup:stop', () => setupWatchers([], null))
 
-    for (const [channel, handler] of Object.entries(CLOUD_HANDLERS)) ipcMain.handle(channel, handler)
+    for (const [channel, handler] of Object.entries({ ...CLOUD_HANDLERS, ...AI_HANDLERS })) ipcMain.handle(channel, handler)
 
     ipcMain.handle('secret:set', (_e, item) => {
       if (!item || !item.id) return { ok: false, error: '缺少节点标识' }
