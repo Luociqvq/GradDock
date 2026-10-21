@@ -213,17 +213,32 @@ const modelOptions = computed(() => {
 
 async function loadModels() {
   if (loadingModels.value) return
+  if (!window.gradDock) {
+    modelsError.value = '浏览器预览模式不能联网'
+    return
+  }
   loadingModels.value = true
   modelsError.value = ''
   try {
-    // 主进程是读盘拿接口地址的，先把界面上改过的地址落盘再拉
-    await saveAi()
+    // 主进程从磁盘读接口地址和密钥：先把界面上填的落盘，Key 填了没存的也一并存掉
+    await persistAi()
+    if (aiForm.key.trim()) {
+      await setAiKey(aiForm.key)
+      aiForm.key = ''
+    }
     const res = await window.gradDock.aiModels()
     if (!res || !res.ok) {
       modelsError.value = (res && res.error) || '读取模型清单失败'
       return
     }
-    modelList.value = res.models || []
+    const list = res.models || []
+    modelList.value = list
+    // 列表更新后默认选第一个；只有当前填写的模型还在新清单里时才保留原选择
+    const current = String(aiForm.model || '').trim()
+    if (list.length && (!current || !list.some((m) => m.id === current))) {
+      aiForm.model = list[0].id
+      await persistAi()
+    }
   } catch (err) {
     modelsError.value = err.message || '读取模型清单失败'
   } finally {
@@ -231,8 +246,15 @@ async function loadModels() {
   }
 }
 
-function saveAi() {
+async function persistAi() {
   return saveAiConfig({ enabled: aiForm.enabled, baseUrl: aiForm.baseUrl.trim(), model: aiForm.model.trim() })
+}
+
+/** 保存设置后顺手刷新模型清单：接口换了、密钥存了，列表就该跟着新接口走。 */
+async function saveAi() {
+  await persistAi()
+  probeResult.value = null
+  if (state.ai.hasKey || aiForm.key.trim()) loadModels()
 }
 
 async function saveKey() {
@@ -240,7 +262,7 @@ async function saveKey() {
     await setAiKey(aiForm.key)
     aiForm.key = ''
     state.ai.error = ''
-    if (state.ai.hasKey && !modelList.value.length) loadModels()
+    loadModels()
   } catch (err) {
     state.ai.error = err.message
   }
@@ -255,7 +277,7 @@ function clearKey() {
 async function probe() {
   probeResult.value = null
   try {
-    await saveAi()
+    await persistAi()
     probeResult.value = await testAiParse(PROBE_TEXT)
   } catch (err) {
     state.ai.error = `试跑失败：${err.message || err}`
