@@ -1,7 +1,7 @@
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
-const { spawn } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, nativeImage, shell, screen, safeStorage, dialog } = require('electron')
 const { aiParse, aiListModels } = require('./ai.js')
 
@@ -11,6 +11,19 @@ const CLOUD_SECRET_KEY = 'todoflow'
 const AI_SECRET_KEY = 'ai'
 const DATA_FILE = () => path.join(app.getPath('userData'), 'grad-dock.json')
 const SECRET_FILE = () => path.join(app.getPath('userData'), 'grad-dock-secrets.json')
+
+// Windows 通知中心顶部的来源名称取自 AppUserModelId：
+// 不注册的话开发态会显示成 electron.app.Electron。这里对齐 electron-builder 的 appId，
+// 并在 HKCU 登记一次显示名，这样通知标题就是 GradDock 而不是 Electron。
+const APP_ID = 'app.graddock.desktop'
+app.setAppUserModelId(APP_ID)
+if (process.platform === 'win32') {
+  try {
+    spawnSync('reg', ['add', `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`, '/v', 'DisplayName', '/t', 'REG_SZ', '/d', 'GradDock', '/f'], { windowsHide: true })
+  } catch {
+    /* 注册失败只影响通知上的应用名，不影响提醒本身 */
+  }
+}
 
 const SIZE = {
   square: { width: 56, height: 56 },

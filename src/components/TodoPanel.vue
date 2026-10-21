@@ -21,9 +21,11 @@
       <p>待办清空了，去跑实验吧</p>
     </div>
 
-    <TransitionGroup v-else tag="div" class="flex flex-col gap-2">
-      <article v-for="todo in pending" :key="todo.id" class="todo" :class="{ 'todo--over': meta(todo).overdue }" @contextmenu.prevent.stop="todoMenu($event, todo)">
-        <button class="check no-drag" :class="`check--${todo.priority}`" @click="run(() => actions.toggleTodo(todo.id))" />
+    <TransitionGroup v-else tag="div" class="todo-list flex flex-col gap-2">
+      <article v-for="todo in pending" :key="todo.id" class="todo" :class="{ 'todo--over': meta(todo).overdue, 'todo--win': winning.has(todo.id) }" @contextmenu.prevent.stop="todoMenu($event, todo)">
+        <button class="check no-drag" :class="`check--${todo.priority}`" @click="completeTodo(todo)">
+          <svg class="check-mark" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-6.5" /></svg>
+        </button>
         <div class="flex-1 min-w-0">
           <h4>{{ todo.title }}</h4>
           <div class="flex flex-wrap items-center gap-1.5 mt-1">
@@ -57,6 +59,8 @@ import { dueMeta, TONE_CLASS, fmtClock, startOfDay, DAY } from '../domain/time.j
 
 const draft = ref('')
 const busy = ref(false)
+/** 正在播放「完成」动画的待办 id，动画播完才真正切换状态，让用户看得见反馈。 */
+const winning = ref(new Set())
 const pending = computed(() => getters.pending.value)
 const completed = computed(() => state.data.todos.filter((t) => t.done))
 const cloud = computed(() => state.cloud)
@@ -89,6 +93,16 @@ async function submit() {
   })
 }
 
+/** 勾选框和右键菜单共用：先播 420ms 的完成动画（画勾 + 弹跳 + 划线），再把状态切到已完成。 */
+function completeTodo(todo) {
+  if (winning.value.has(todo.id)) return
+  winning.value = new Set(winning.value).add(todo.id)
+  setTimeout(() => {
+    winning.value = new Set([...winning.value].filter((id) => id !== todo.id))
+    run(() => actions.toggleTodo(todo.id))
+  }, 420)
+}
+
 /** 当天 23:59:59，和新建待办时的默认口径保持一致。 */
 const endOfDayPlus = (n) => startOfDay(state.now) + n * DAY + DAY - 1000
 const daysToSunday = () => (7 - new Date(state.now).getDay()) % 7
@@ -97,7 +111,7 @@ const patchTodo = (todo, patch) => run(() => actions.updateTodo(todo.id, patch))
 function todoMenu(event, todo) {
   const sunday = daysToSunday()
   openMenu(event, [
-    { label: '标记完成', icon: Check, action: () => run(() => actions.toggleTodo(todo.id)) },
+    { label: '标记完成', icon: Check, action: () => completeTodo(todo) },
     { separator: true },
     { label: '今天到期', icon: CalendarClock, action: () => patchTodo(todo, { dueDate: endOfDayPlus(0) }) },
     { label: '明天到期', icon: CalendarClock, action: () => patchTodo(todo, { dueDate: endOfDayPlus(1) }) },
@@ -236,6 +250,7 @@ function tagClass(tag) {
 }
 
 .check {
+  position: relative;
   width: 20px;
   height: 20px;
   margin-top: 1px;
@@ -244,10 +259,15 @@ function tagClass(tag) {
   border: 2px solid #cbd5e1;
   background: #fff;
   cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .check:hover {
   border-color: #818cf8;
+}
+
+.check:active {
+  transform: scale(0.82);
 }
 
 .check--high {
@@ -256,6 +276,112 @@ function tagClass(tag) {
 
 .check--low {
   border-style: dashed;
+}
+
+/* 完成时勾选框填充绿色并画勾 */
+.todo--win .check {
+  border-color: #10b981;
+  background: linear-gradient(135deg, #34d399, #10b981);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.18);
+}
+
+.check-mark {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+}
+
+.todo--win .check-mark {
+  animation: check-draw 0.32s 0.08s ease forwards;
+}
+
+@keyframes check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* 卡片完成时的弹跳 + 绿色高亮 */
+.todo--win {
+  border-color: rgba(110, 231, 183, 0.9);
+  animation: todo-pop 0.42s cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+@keyframes todo-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.03);
+    box-shadow: 0 8px 24px -12px rgba(16, 185, 129, 0.6);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* 标题划线扫过 */
+.todo h4 {
+  position: relative;
+  width: fit-content;
+}
+
+.todo--win h4::after {
+  content: '';
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 55%;
+  height: 1.5px;
+  border-radius: 2px;
+  background: #94a3b8;
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: strike 0.28s 0.12s ease forwards;
+}
+
+@keyframes strike {
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* 列表进出场：完成后卡片滑出，其余卡片平滑上移补位 */
+.todo-list {
+  position: relative;
+}
+
+.todo-enter-active {
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+.todo-enter-from {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.todo-leave-active {
+  position: absolute;
+  width: 100%;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.todo-leave-to {
+  opacity: 0;
+  transform: translateX(28px) scale(0.96);
+}
+
+.todo-move {
+  transition: transform 0.18s ease;
 }
 
 .tag {
