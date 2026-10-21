@@ -19,9 +19,13 @@ const APP_ID = 'app.graddock.desktop'
 app.setAppUserModelId(APP_ID)
 if (process.platform === 'win32') {
   try {
-    spawnSync('reg', ['add', `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`, '/v', 'DisplayName', '/t', 'REG_SZ', '/d', 'GradDock', '/f'], { windowsHide: true })
-  } catch {
+    // 不依赖 PATH：Git Bash 环境里启动时 spawnSync('reg') 可能解析不到，直接给绝对路径
+    const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe')
+    const res = spawnSync(reg, ['add', `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`, '/v', 'DisplayName', '/t', 'REG_SZ', '/d', 'GradDock', '/f'], { windowsHide: true, timeout: 5000 })
+    if (res.error) console.warn('[GradDock] 注册通知显示名失败：', res.error.message)
+  } catch (err) {
     /* 注册失败只影响通知上的应用名，不影响提醒本身 */
+    console.warn('[GradDock] 注册通知显示名失败：', err.message)
   }
 }
 
