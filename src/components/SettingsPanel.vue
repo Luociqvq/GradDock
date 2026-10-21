@@ -65,11 +65,6 @@
           <span>用大模型解析</span>
           <input type="checkbox" v-model="aiForm.enabled" />
         </label>
-        <label class="field"><span>服务商</span>
-          <select v-model="aiForm.preset" @change="applyPreset">
-            <option v-for="item in PRESETS" :key="item.label" :value="item.label">{{ item.label }}</option>
-          </select>
-        </label>
         <label class="field"><span>接口</span><input v-model="aiForm.baseUrl" placeholder="https://api.deepseek.com/v1" @change="modelList = []" /></label>
         <label class="field">
           <span>模型</span>
@@ -119,21 +114,10 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { SlidersHorizontal, X, Download, Upload } from 'lucide-vue-next'
 import { state, actions, cloudConnect, cloudDisconnect, syncTodos, aiReady, saveAiConfig, setAiKey, testAiParse } from '../store.js'
 import { fmtClock } from '../domain/time.js'
-
-/** 各家都兼容 OpenAI 的 /chat/completions，预设只帮忙填地址和常用模型名，改得了。 */
-const PRESETS = [
-  { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-  { label: 'Kimi · Moonshot', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
-  { label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
-  { label: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
-  { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat' },
-  { label: '本地 Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen3:8b' },
-  { label: '自定义', baseUrl: '', model: '' }
-]
 
 const PROBE_TEXT = '周四前跑完 rebuttal 实验，下周三组会要交 PPT，报销单有空交一下'
 
@@ -178,30 +162,10 @@ const loadingModels = ref(false)
 const modelsError = ref('')
 const aiForm = reactive({
   enabled: state.data.ai.enabled,
-  preset: presetLabel(state.data.ai.baseUrl),
   baseUrl: state.data.ai.baseUrl,
   model: state.data.ai.model,
   key: ''
 })
-
-function presetLabel(url) {
-  const hit = PRESETS.find((p) => p.baseUrl === url)
-  return hit ? hit.label : '自定义'
-}
-
-// 手改地址后，服务商那一栏不能还停在原来选中的名字上骗人
-watch(() => aiForm.baseUrl, (url) => {
-  aiForm.preset = presetLabel(String(url || '').trim())
-})
-
-function applyPreset() {
-  const hit = PRESETS.find((p) => p.label === aiForm.preset)
-  if (!hit || hit.label === '自定义') return
-  aiForm.baseUrl = hit.baseUrl
-  aiForm.model = hit.model
-  probeResult.value = null
-  modelList.value = []
-}
 
 /** 手填过、但清单里没有的模型要留在选项里，否则下拉一渲染就把当前值改掉了。 */
 const modelOptions = computed(() => {
